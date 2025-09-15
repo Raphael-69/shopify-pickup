@@ -110,3 +110,30 @@ app.get("/pickup/confirm", async (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// Add this temporarily at the bottom of server.js
+
+app.get("/test-shopify", async (req, res) => {
+  try {
+    const url = `https://${process.env.SHOP_NAME}/admin/api/${process.env.SHOPIFY_API_VERSION}/shop.json`;
+
+    const response = await axios.get(url, {
+      headers: {
+        "X-Shopify-Access-Token": process.env.SHOPIFY_ADMIN_TOKEN,
+        "Content-Type": "application/json",
+      },
+    });
+
+    res.send({
+      success: true,
+      shop: response.data.shop,
+      apiVersion: process.env.SHOPIFY_API_VERSION,
+    });
+  } catch (err) {
+    console.error("Shopify test error:", err.response?.data || err.message);
+    res.status(500).send({
+      success: false,
+      error: err.response?.data || err.message,
+    });
+  }
+});
