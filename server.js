@@ -25,6 +25,16 @@ async function shopifyGraphQL(body) {
   });
 }
 
+// test environment variables
+app.get("/test-env", (req, res) => {
+  res.json({
+    SHOPIFY_ADMIN_TOKEN: SHOPIFY_ADMIN_TOKEN ? "✅ exists" : "❌ missing",
+    SHOP_NAME: SHOP_NAME || "❌ missing",
+    SHOPIFY_API_VERSION: API_VERSION || "❌ missing",
+  });
+});
+// Endpoint to confirm pickup
+
 app.get("/pickup/confirm", async (req, res) => {
   try {
     const { order_id, token } = req.query;
