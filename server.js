@@ -196,6 +196,39 @@ app.get("/test-order", async (req, res) => {
   }
 });
 
+// Route to list recent Shopify orders
+app.get("/list-orders", async (req, res) => {
+  try {
+    const response = await shopifyREST(
+      "get",
+      "/orders.json?limit=5" // Change limit if you want more orders
+    );
+
+    if (!response.data.orders || response.data.orders.length === 0) {
+      return res.json({ success: true, orders: [], message: "No orders found." });
+    }
+
+    // Return order IDs and basic info
+    const orders = response.data.orders.map(order => ({
+      id: order.id,
+      name: order.name,
+      email: order.email,
+      created_at: order.created_at,
+      total_price: order.total_price,
+    }));
+
+    res.json({ success: true, orders });
+
+  } catch (err) {
+    console.error("Shopify API error:", err.response?.data || err.message);
+    res.status(err.response?.status || 500).json({
+      success: false,
+      error: err.response?.data || err.message,
+      hint: "Check Shopify token permissions and shop domain.",
+    });
+  }
+});
+
 
 // ✅ Always keep app.listen at the bottom
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
