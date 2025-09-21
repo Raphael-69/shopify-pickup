@@ -23,7 +23,7 @@ app.get("/", (req, res) => {
   res.send("🚀 Server is live and healthy!");
 });
 
-// 🔹 Confirm pickup → fulfill order directly
+// 🔹 Confirm pickup → fulfill order
 app.get("/pickup/confirm", async (req, res) => {
   try {
     const { order_id, token } = req.query;
@@ -37,9 +37,31 @@ app.get("/pickup/confirm", async (req, res) => {
       return res.status(403).send("Invalid or expired link.");
     }
 
-    // Step 1: Fetch the first location_id
-    const locResp = await axios.get(
-      `https://${SHOP_NAME}/admin/api/${API_VERSION}/locations.json`,
+    // Step 1: Get fulfillment orders for this order
+    const fulfillmentOrdersUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillment_orders.json`;
+    const fulfillmentOrdersResp = await axios.get(fulfillmentOrdersUrl, {
+      headers: {
+        "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
+        "Content-Type": "application/json",
+      },
+    });
+
+    const fulfillmentOrders = fulfillmentOrdersResp.data.fulfillment_orders;
+    if (!fulfillmentOrders || fulfillmentOrders.length === 0) {
+      return res.status(404).send("No fulfillment orders found for this order.");
+    }
+
+    // Step 2: Fulfill the first fulfillment order
+    const fulfillmentOrderId = fulfillmentOrders[0].id;
+    const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/fulfillment_orders/${fulfillmentOrderId}/fulfillments.json`;
+
+    const fulfillmentResp = await axios.post(
+      fulfillmentUrl,
+      {
+        fulfillment: {
+          message: "Pickup confirmed by customer",
+        },
+      },
       {
         headers: {
           "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
@@ -48,31 +70,12 @@ app.get("/pickup/confirm", async (req, res) => {
       }
     );
 
-    if (!locResp.data.locations || locResp.data.locations.length === 0) {
-      return res.status(500).send("No Shopify locations found.");
+    if (!fulfillmentResp.data.fulfillment) {
+      return res.status(500).send({
+        success: false,
+        error: fulfillmentResp.data || "Could not fulfill order.",
+      });
     }
-    const locationId = locResp.data.locations[0].id;
-
-    // Step 2: Create a fulfillment for the fulfillment order
-const fulfillmentOrderId = fulfillmentOrders[0].id;
-
-const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/fulfillment_orders/${fulfillmentOrderId}/fulfillments.json`;
-
-const fulfillmentResp = await axios.post(
-  fulfillmentUrl,
-  {
-    fulfillment: {
-      message: "Pickup confirmed by customer"
-    }
-  },
-  {
-    headers: {
-      "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
-      "Content-Type": "application/json",
-    },
-  }
-);
-
 
     // ✅ Success page
     res.send(`
@@ -92,6 +95,7 @@ const fulfillmentResp = await axios.post(
     });
   }
 });
+
 
 
 // 🔹 Test env vars
