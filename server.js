@@ -216,5 +216,66 @@ app.get("/list-orders", async (req, res) => {
   }
 });
 
+// 🔹 Confirm pickup (POST, AJAX-safe)
+app.post("/pickup/confirm/execute", async (req, res) => {
+  try {
+    const { order_id, token } = req.body;
+    if (!order_id || !token) return res.status(400).send(currentLang === "he" ? "בקשה לא חוקית" : "Invalid request");
+
+    // Validate token
+    const validToken = generateToken(order_id);
+    if (token !== validToken) return res.status(403).send(currentLang === "he" ? "קישור לא חוקי או פג תוקף" : "Invalid or expired link");
+
+    // Get order
+    const order = await fetchOrder(order_id);
+    if (!order) return res.status(404).send(currentLang === "he" ? "הזמנה לא נמצאה" : "Order not found");
+
+    // Check payment status
+    if (order.financial_status !== "paid") {
+      return res.status(403).send(currentLang === "he" ? "לא ניתן לאשר איסוף - התשלום לא בוצע" : "Cannot confirm pickup - payment not completed");
+    }
+
+    // Check if already fulfilled
+    if (order.fulfillment_status === "fulfilled") {
+      return res.status(403).send(currentLang === "he" ? "ההזמנה כבר נאספה" : "Order already picked up");
+    }
+
+    // Build fulfillment payload
+    const lineItems = order.line_items.map(li => ({ id: li.id }));
+    let locationId = order.location_id;
+
+    if (!locationId) {
+      const locResp = await axios.get(`https://${SHOP_NAME}/admin/api/${API_VERSION}/locations.json`, {
+        headers: { "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN }
+      });
+      if (locResp.data.locations?.length > 0) locationId = locResp.data.locations[0].id;
+    }
+
+    // Fulfill order
+    const fulfillmentResp = await axios.post(
+      `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`,
+      {
+        fulfillment: {
+          message: "Pickup confirmed by customer",
+          notify_customer: true,
+          line_items: lineItems,
+          location_id: locationId,
+        }
+      },
+      {
+        headers: { "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN, "Content-Type": "application/json" }
+      }
+    );
+
+    if (!fulfillmentResp.data.fulfillment) throw new Error("Could not fulfill order");
+
+    res.send(currentLang === "he" ? "✅ האיסוף אושר בהצלחה!" : "✅ Pickup confirmed successfully!");
+  } catch (err) {
+    console.error("Pickup execute error:", err.response?.data || err.message || err);
+    res.status(500).send(currentLang === "he" ? "❌ שגיאה בביצוע האיסוף. נסה שוב מאוחר יותר" : "❌ Pickup failed. Please try again.");
+  }
+});
+
+
 // ✅ Start server
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
