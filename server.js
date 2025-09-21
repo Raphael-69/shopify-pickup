@@ -53,32 +53,26 @@ app.get("/pickup/confirm", async (req, res) => {
     }
     const locationId = locResp.data.locations[0].id;
 
-    // Step 2: Create a fulfillment for the whole order
-    const fulfillmentPayload = {
-      fulfillment: {
-        location_id: locationId,
-        notify_customer: true,
-        tracking_number: null,
-      },
-    };
+    // Step 2: Create a fulfillment for the fulfillment order
+const fulfillmentOrderId = fulfillmentOrders[0].id;
 
-    const fulfillmentResp = await axios.post(
-      `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`,
-      fulfillmentPayload,
-      {
-        headers: {
-          "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
-          "Content-Type": "application/json",
-        },
-      }
-    );
+const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/fulfillment_orders/${fulfillmentOrderId}/fulfillments.json`;
 
-    if (!fulfillmentResp.data.fulfillment) {
-      return res.status(500).send({
-        success: false,
-        error: fulfillmentResp.data || "Could not fulfill order.",
-      });
+const fulfillmentResp = await axios.post(
+  fulfillmentUrl,
+  {
+    fulfillment: {
+      message: "Pickup confirmed by customer"
     }
+  },
+  {
+    headers: {
+      "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
+      "Content-Type": "application/json",
+    },
+  }
+);
+
 
     // ✅ Success page
     res.send(`
