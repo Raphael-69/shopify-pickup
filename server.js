@@ -147,12 +147,17 @@ app.get("/test-shopify", async (req, res) => {
 });
 
 app.get("/test-order", async (req, res) => {
+  const orderId = req.query.id;
+  if (!orderId) {
+    return res.status(400).json({ error: "Missing order ID" });
+  }
+
   try {
-    const orderId = req.query.id;
     const response = await shopifyREST("get", `/orders/${orderId}.json`);
     res.json(response.data);
   } catch (err) {
-    res.status(500).json(err.response?.data || err.message);
+    console.error(err.response?.data || err.message);
+    res.status(err.response?.status || 500).json(err.response?.data || err.message);
   }
 });
 
