@@ -23,7 +23,7 @@ app.get("/", (req, res) => {
   res.send("🚀 Server is live and healthy!");
 });
 
-// 🔹 Confirm pickup → fulfill order
+// 🔹 Confirm pickup → auto-fulfill order
 app.get("/pickup/confirm", async (req, res) => {
   try {
     const { order_id, token } = req.query;
@@ -37,30 +37,36 @@ app.get("/pickup/confirm", async (req, res) => {
       return res.status(403).send("Invalid or expired link.");
     }
 
-    // Step 1: Get fulfillment orders for this order
-    const fulfillmentOrdersUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillment_orders.json`;
-    const fulfillmentOrdersResp = await axios.get(fulfillmentOrdersUrl, {
+    // Step 1: Fetch the order (to get line_items + location_id)
+    const orderUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}.json`;
+    const orderResp = await axios.get(orderUrl, {
       headers: {
         "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
         "Content-Type": "application/json",
       },
     });
 
-    const fulfillmentOrders = fulfillmentOrdersResp.data.fulfillment_orders;
-    if (!fulfillmentOrders || fulfillmentOrders.length === 0) {
-      return res.status(404).send("No fulfillment orders found for this order.");
+    const order = orderResp.data.order;
+    if (!order) {
+      return res.status(404).send("Order not found.");
     }
 
-    // Step 2: Fulfill the first fulfillment order
-    const fulfillmentOrderId = fulfillmentOrders[0].id;
-    const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/fulfillment_orders/${fulfillmentOrderId}/fulfillments.json`;
+    // Step 2: Create fulfillment
+    const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`;
 
     const fulfillmentResp = await axios.post(
       fulfillmentUrl,
       {
         fulfillment: {
-          message: "Pickup confirmed by customer",
-        },
+          location_id: order.location_id, // important: where it’s fulfilled from
+          line_items: order.line_items.map(li => ({ id: li.id })), // fulfill all items
+          notify_customer: true,
+          tracking_info: {
+            number: "PICKUP",
+            company: "Store Pickup",
+            url: "https://yourstore.com/pickup-confirmed"
+          }
+        }
       },
       {
         headers: {
@@ -82,7 +88,7 @@ app.get("/pickup/confirm", async (req, res) => {
       <html>
         <body style="font-family:sans-serif;text-align:center;padding:50px;">
           <h2>✅ Pickup Confirmed</h2>
-          <p>Your order #${order_id} has been marked as Fulfilled.</p>
+          <p>Your order <b>${order.name}</b> has been marked as <b>Fulfilled</b>.</p>
           <p>Show this screen to staff when picking up.</p>
         </body>
       </html>
