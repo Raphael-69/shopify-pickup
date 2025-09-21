@@ -146,20 +146,56 @@ app.get("/test-shopify", async (req, res) => {
   }
 });
 
+// Robust test-order route
 app.get("/test-order", async (req, res) => {
   const orderId = req.query.id;
+
+  // 1️⃣ Validate input
   if (!orderId) {
-    return res.status(400).json({ error: "Missing order ID" });
+    return res.status(400).json({ error: "Missing order ID in query string." });
+  }
+
+  // Ensure orderId is numeric
+  if (!/^\d+$/.test(orderId)) {
+    return res.status(400).json({ error: "Invalid order ID format. Must be numeric." });
   }
 
   try {
+    console.log(`Fetching order ID: ${orderId} from Shopify...`);
+
     const response = await shopifyREST("get", `/orders/${orderId}.json`);
-    res.json(response.data);
+
+    if (!response.data || !response.data.order) {
+      // Shopify returned 200 but no order
+      return res.status(404).json({
+        error: "Order not found. Double-check the order ID and Shopify store.",
+        shopifyResponse: response.data,
+      });
+    }
+
+    console.log("Shopify order fetched successfully:", response.data.order.id);
+    res.json({
+      success: true,
+      order: response.data.order,
+    });
+
   } catch (err) {
-    console.error(err.response?.data || err.message);
-    res.status(err.response?.status || 500).json(err.response?.data || err.message);
+    // Capture Shopify error code and message
+    const status = err.response?.status || 500;
+    const data = err.response?.data || err.message || err;
+
+    console.error("Shopify API error:", status, data);
+
+    res.status(status).json({
+      success: false,
+      error: "Shopify API error",
+      status,
+      details: data,
+      hint: "Check order ID, shop name, and API token permissions.",
+    });
   }
 });
+
 
 // ✅ Always keep app.listen at the bottom
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
