@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3000;
 
 const SHOPIFY_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const SHOP_NAME = process.env.SHOP_NAME; // e.g. yourstore.myshopify.com
-const API_VERSION = process.env.SHOPIFY_API_VERSION || "2025-01";
+const API_VERSION = process.env.SHOPIFY_API_VERSION || "2025-07";
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
