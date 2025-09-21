@@ -51,11 +51,15 @@ app.get("/", (req, res) => {
 app.get("/pickup/confirm", async (req, res) => {
   try {
     const { order_id, token } = req.query;
-    if (!order_id || !token) return res.status(400).send("Invalid request.");
+    if (!order_id || !token) {
+      return res.status(400).send("Invalid request: missing order_id or token.");
+    }
 
     // Validate token
     const validToken = generateToken(order_id);
-    if (token !== validToken) return res.status(403).send("Invalid or expired link.");
+    if (token !== validToken) {
+      return res.status(403).send("Invalid or expired link.");
+    }
 
     // Step 1: Get fulfillment orders for this order
     const fulfillmentOrdersResp = await shopifyREST(
@@ -72,6 +76,7 @@ app.get("/pickup/confirm", async (req, res) => {
     const fulfillmentOrderId = fulfillmentOrders[0].id;
     const fulfillmentResp = await shopifyREST("post", `/fulfillments.json`, {
       fulfillment: {
+        message: "Pickup confirmed by customer",
         line_items_by_fulfillment_order: [
           { fulfillment_order_id: fulfillmentOrderId },
         ],
@@ -81,10 +86,13 @@ app.get("/pickup/confirm", async (req, res) => {
     // Check success
     if (!fulfillmentResp.data.fulfillment) {
       console.error("Fulfillment error:", fulfillmentResp.data);
-      return res.status(500).send("Could not fulfill order.");
+      return res.status(500).send({
+        success: false,
+        error: fulfillmentResp.data || "Could not fulfill order.",
+      });
     }
 
-    // Success page
+    // ✅ Success page
     res.send(`
       <html>
         <body style="font-family:sans-serif;text-align:center;padding:50px;">
@@ -96,9 +104,13 @@ app.get("/pickup/confirm", async (req, res) => {
     `);
   } catch (err) {
     console.error("Server error:", err.response?.data || err.message || err);
-    res.status(500).send("Server error.");
+    res.status(500).send({
+      success: false,
+      error: err.response?.data || err.message || err,
+    });
   }
 });
+
 
 // Test env
 app.get("/test-env", (req, res) => {
