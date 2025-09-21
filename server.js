@@ -146,5 +146,15 @@ app.get("/test-shopify", async (req, res) => {
   }
 });
 
+app.get("/test-order", async (req, res) => {
+  try {
+    const orderId = req.query.id;
+    const response = await shopifyREST("get", `/orders/${orderId}.json`);
+    res.json(response.data);
+  } catch (err) {
+    res.status(500).json(err.response?.data || err.message);
+  }
+});
+
 // ✅ Always keep app.listen at the bottom
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
