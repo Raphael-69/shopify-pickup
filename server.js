@@ -18,17 +18,29 @@ function generateToken(orderId) {
 }
 
 async function shopifyREST(method, endpoint, data = null) {
-  const url = `https://${SHOP_NAME}/admin/api/${API_VERSION}${endpoint}`;
-  return axios({
-    method,
-    url,
-    data,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
-    },
-  });
+  // Ensure endpoint always starts with "/"
+  const cleanEndpoint = endpoint.startsWith("/") ? endpoint : "/" + endpoint;
+
+  const url = `https://${SHOP_NAME}/admin/api/${API_VERSION}${cleanEndpoint}`;
+
+  try {
+    const response = await axios({
+      method,
+      url,
+      data,
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
+      },
+    });
+    return response;
+  } catch (err) {
+    // Log exact Shopify error for debugging in Render
+    console.error("Shopify API error:", err.response?.data || err.message);
+    throw err;
+  }
 }
+
 
 // ✅ Health check / root route (add this)
 app.get("/", (req, res) => {
