@@ -23,7 +23,7 @@ app.get("/", (req, res) => {
   res.send("🚀 Server is live and healthy!");
 });
 
-// 🔹 Confirm pickup → auto-fulfill order
+// 🔹 Confirm pickup → fulfill order
 app.get("/pickup/confirm", async (req, res) => {
   try {
     const { order_id, token } = req.query;
@@ -37,7 +37,7 @@ app.get("/pickup/confirm", async (req, res) => {
       return res.status(403).send("Invalid or expired link.");
     }
 
-    // Step 1: Fetch the order (to get line_items + location_id)
+    // ✅ Get the order details
     const orderUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}.json`;
     const orderResp = await axios.get(orderUrl, {
       headers: {
@@ -45,29 +45,46 @@ app.get("/pickup/confirm", async (req, res) => {
         "Content-Type": "application/json",
       },
     });
-
     const order = orderResp.data.order;
+
     if (!order) {
       return res.status(404).send("Order not found.");
     }
 
-    // Step 2: Create fulfillment
+    // Build fulfillment payload
+    const lineItems = order.line_items.map(li => ({ id: li.id }));
+    let locationId = order.location_id;
+
+    // 🔹 If no location_id, fallback to shop’s first location
+    if (!locationId) {
+      const locUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/locations.json`;
+      const locResp = await axios.get(locUrl, {
+        headers: {
+          "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
+          "Content-Type": "application/json",
+        },
+      });
+      if (locResp.data.locations && locResp.data.locations.length > 0) {
+        locationId = locResp.data.locations[0].id;
+      }
+    }
+
+    // ✅ Fulfill the order
     const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`;
+    const fulfillmentData = {
+      fulfillment: {
+        message: "Pickup confirmed by customer",
+        notify_customer: true,
+        line_items: lineItems,
+        location_id: locationId,
+      },
+    };
+
+    console.log("Fulfillment payload:", JSON.stringify(fulfillmentData, null, 2));
 
     const fulfillmentResp = await axios.post(
       fulfillmentUrl,
-      {
-        fulfillment: {
-          location_id: order.location_id, // important: where it’s fulfilled from
-          line_items: order.line_items.map(li => ({ id: li.id })), // fulfill all items
-          notify_customer: true,
-          tracking_info: {
-            number: "PICKUP",
-            company: "Store Pickup",
-            url: "https://yourstore.com/pickup-confirmed"
-          }
-        }
-      },
+      fulfillmentData,
       {
         headers: {
           "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
@@ -88,7 +105,7 @@ app.get("/pickup/confirm", async (req, res) => {
       <html>
         <body style="font-family:sans-serif;text-align:center;padding:50px;">
           <h2>✅ Pickup Confirmed</h2>
-          <p>Your order <b>${order.name}</b> has been marked as <b>Fulfilled</b>.</p>
+          <p>Your order #${order_id} has been marked as Fulfilled.</p>
           <p>Show this screen to staff when picking up.</p>
         </body>
       </html>
@@ -101,6 +118,7 @@ app.get("/pickup/confirm", async (req, res) => {
     });
   }
 });
+
 
 
 
