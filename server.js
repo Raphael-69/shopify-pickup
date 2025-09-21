@@ -10,6 +10,9 @@ const SHOPIFY_ADMIN_TOKEN = process.env.SHOPIFY_ADMIN_TOKEN;
 const SHOP_NAME = process.env.SHOP_NAME; // e.g. yourstore.myshopify.com
 const API_VERSION = process.env.SHOPIFY_API_VERSION || "2025-01";
 
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
 function generateToken(orderId) {
   return crypto.createHash("sha1").update(orderId.toString()).digest("hex");
 }
@@ -26,6 +29,11 @@ async function shopifyREST(method, endpoint, data = null) {
     },
   });
 }
+
+// ✅ Health check / root route (add this)
+app.get("/", (req, res) => {
+  res.send("🚀 Server is live and healthy!");
+});
 
 // Confirm pickup → fulfill order
 app.get("/pickup/confirm", async (req, res) => {
@@ -114,4 +122,5 @@ app.get("/test-shopify", async (req, res) => {
   }
 });
 
+// ✅ Always keep app.listen at the bottom
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
