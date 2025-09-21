@@ -23,6 +23,18 @@ app.get("/", (req, res) => {
   res.send("🚀 Server is live and healthy!");
 });
 
+// 🔹 Helper: fetch order by ID
+async function fetchOrder(orderId) {
+  const orderUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${orderId}.json`;
+  const orderResp = await axios.get(orderUrl, {
+    headers: {
+      "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
+      "Content-Type": "application/json",
+    },
+  });
+  return orderResp.data.order;
+}
+
 // 🔹 Confirm pickup → fulfill order
 app.get("/pickup/confirm", async (req, res) => {
   try {
@@ -38,15 +50,7 @@ app.get("/pickup/confirm", async (req, res) => {
     }
 
     // ✅ Get the order details
-    const orderUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}.json`;
-    const orderResp = await axios.get(orderUrl, {
-      headers: {
-        "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
-        "Content-Type": "application/json",
-      },
-    });
-    const order = orderResp.data.order;
-
+    const order = await fetchOrder(order_id);
     if (!order) {
       return res.status(404).send("Order not found.");
     }
@@ -119,9 +123,6 @@ app.get("/pickup/confirm", async (req, res) => {
   }
 });
 
-
-
-
 // 🔹 Test env vars
 app.get("/test-env", (req, res) => {
   res.json({
@@ -168,22 +169,15 @@ app.get("/test-order", async (req, res) => {
   }
 
   try {
-    const url = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${orderId}.json`;
-    const response = await axios.get(url, {
-      headers: {
-        "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
-        "Content-Type": "application/json",
-      },
-    });
+    const order = await fetchOrder(orderId);
 
-    if (!response.data || !response.data.order) {
+    if (!order) {
       return res.status(404).json({
         error: "Order not found. Double-check the order ID and Shopify store.",
-        shopifyResponse: response.data,
       });
     }
 
-    res.json({ success: true, order: response.data.order });
+    res.json({ success: true, order });
   } catch (err) {
     const status = err.response?.status || 500;
     const data = err.response?.data || err.message || err;
