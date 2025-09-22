@@ -16,6 +16,10 @@ const LOCATIONS = {
   WAREHOUSE: 79217262692  // מחסן - Holon
 };
 
+// 🔹 In-memory store to track picked-up orders
+// For production, use a database
+const pickedUpOrders = {};
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -47,13 +51,13 @@ app.get("/pickup/confirm", async (req, res) => {
     const validToken = generateToken(order_id);
     if (token !== validToken) return res.status(403).send("קישור לא חוקי או פג תוקף");
 
+    // Check if already picked up
+    if (pickedUpOrders[order_id]) {
+      return res.send("<h2>❌ הקישור פג תוקף – האיסוף כבר אושר</h2>");
+    }
+
     const order = await fetchOrder(order_id);
     if (!order) return res.status(404).send("ההזמנה לא נמצאה");
-
-    // Already fulfilled
-    if (order.fulfillment_status === "fulfilled") {
-      return res.send("<h2>✅ ההזמנה כבר נאספה, הקישור אינו פעיל יותר</h2>");
-    }
 
     // Payment not paid
     if (order.financial_status !== "paid") {
@@ -103,54 +107,44 @@ app.get("/pickup/confirm", async (req, res) => {
   }
 });
 
-// 🔹 Execute pickup fulfillment (updated)
+// 🔹 Execute pickup fulfillment
 app.post("/pickup/confirm/execute", async (req, res) => {
   try {
     const { order_id, token } = req.body;
     if (!order_id || !token)
       return res.status(400).send("<h2>❌ בקשה לא חוקית: חסר order_id או token</h2>");
 
-    // Validate token
     const validToken = generateToken(order_id);
     if (token !== validToken)
       return res.status(403).send("<h2>❌ הקישור אינו חוקי או פג תוקף</h2>");
 
-    // Get order
+    // Check if already picked up
+    if (pickedUpOrders[order_id]) {
+      return res.status(200).send("<h2>❌ הקישור פג תוקף – האיסוף כבר אושר</h2>");
+    }
+
     const order = await fetchOrder(order_id);
     if (!order) return res.status(404).send("<h2>❌ ההזמנה לא נמצאה</h2>");
-
-    // Already fulfilled
-    if (order.fulfillment_status === "fulfilled") {
-      return res.status(200).send(
-        "<h2>✅ ההזמנה כבר נאספה, הקישור אינו פעיל יותר</h2>"
-      );
-    }
-
-    // Not paid
-    if (order.financial_status !== "paid") {
-      return res
-        .status(403)
-        .send("<h2>❌ לא ניתן לאשר את האיסוף – התשלום לא בוצע</h2>");
-    }
+    if (order.financial_status !== "paid") return res.status(403).send("<h2>❌ לא ניתן לאשר את האיסוף – התשלום לא בוצע</h2>");
 
     // Find unfulfilled items
     const unfulfilledLineItems = order.line_items.filter(
-      (li) => (!li.fulfillment_status || li.fulfillment_status === "unfulfilled") && li.fulfillable_quantity > 0
+      li => (!li.fulfillment_status || li.fulfillment_status === "unfulfilled") && li.fulfillable_quantity > 0
     );
+
     if (unfulfilledLineItems.length === 0) {
       return res.status(400).send("<h2>❌ אין פריטים זמינים למילוי</h2>");
     }
 
-    // ✅ Handle manual vs shopify fulfillment
     const shopifyItems = unfulfilledLineItems.filter(
-      (li) => li.fulfillment_service !== "manual"
+      li => li.fulfillment_service !== "manual"
     );
     const manualItems = unfulfilledLineItems.filter(
-      (li) => li.fulfillment_service === "manual"
+      li => li.fulfillment_service === "manual"
     );
 
     // Determine location
-    let locationId = LOCATIONS.STORE; // default
+    let locationId = LOCATIONS.STORE;
     if (order.shipping_lines && order.shipping_lines.length > 0) {
       const shippingLine = order.shipping_lines[0];
       if (shippingLine.title.includes("מחסן") || shippingLine.code === "מחסן") {
@@ -162,43 +156,47 @@ app.post("/pickup/confirm/execute", async (req, res) => {
 
     // Fulfill Shopify items via API
     if (shopifyItems.length > 0) {
-      const lineItems = shopifyItems.map((li) => ({
-        id: li.id,
-        quantity: li.fulfillable_quantity,
-      }));
+      const lineItems = shopifyItems.map(li => ({ id: li.id, quantity: li.fulfillable_quantity }));
 
       const fulfillmentData = {
         fulfillment: {
           location_id: locationId,
           line_items: lineItems,
           notify_customer: true,
-          message: "Pickup confirmed by customer",
-        },
+          message: "Pickup confirmed by customer"
+        }
       };
 
       const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`;
-      await axios.post(fulfillmentUrl, fulfillmentData, {
-        headers: {
-          "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-      });
+
+      try {
+        const response = await axios.post(fulfillmentUrl, fulfillmentData, {
+          headers: {
+            "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
+            "Content-Type": "application/json",
+            Accept: "application/json"
+          }
+        });
+        console.log("Fulfillment response:", response.data);
+      } catch (err) {
+        console.error("Shopify fulfillment error:", err.response?.data || err.message);
+        return res.status(500).send("<h2>❌ שגיאה בביצוע האיסוף</h2>");
+      }
     }
 
-    // For manual items, just log internally (or update your DB if needed)
+    // Log manual items
     if (manualItems.length > 0) {
-      console.log(
-        `Manual items picked up for order ${order_id}:`,
-        manualItems.map((i) => i.title)
-      );
-      // Optionally, mark these as "picked up" in your database
+      console.log(`Manual items picked up for order ${order_id}:`, manualItems.map(i => i.title));
+      // Optionally, mark them as picked up in your DB
     }
+
+    // ✅ Mark order as picked up (single-use)
+    pickedUpOrders[order_id] = true;
 
     return res.status(200).send("<h2>✅ האיסוף אושר בהצלחה!</h2>");
   } catch (err) {
-  console.error("Pickup execute error full:", err.response?.data || err.message);
-  res.status(500).send(`<h2>❌ Error: ${err.response?.data?.errors || err.message}</h2>`);
+    console.error("Pickup execute error full:", err.response?.data || err.message);
+    res.status(500).send(`<h2>❌ Error: ${err.response?.data?.errors || err.message}</h2>`);
   }
 });
 
