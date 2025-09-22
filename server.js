@@ -118,11 +118,19 @@ app.post("/pickup/confirm/execute", async (req, res) => {
       return res.status(403).send("<h2>❌ הקישור אינו חוקי או פג תוקף</h2>");
     }
 
-    // Get order
+    // Get order with more detailed logging
     const order = await fetchOrder(order_id);
     if (!order) {
       return res.status(404).send("<h2>❌ ההזמנה לא נמצאה</h2>");
     }
+
+    console.log("Order details:", {
+      id: order.id,
+      fulfillment_status: order.fulfillment_status,
+      financial_status: order.financial_status,
+      line_items_count: order.line_items?.length,
+      location_id: order.location_id
+    });
 
     // Check if already fulfilled
     if (order.fulfillment_status === "fulfilled") {
@@ -134,8 +142,29 @@ app.post("/pickup/confirm/execute", async (req, res) => {
       return res.status(403).send("<h2>❌ לא ניתן לאשר את האיסוף – התשלום לא בוצע</h2>");
     }
 
-    // Build fulfillment payload
-    const lineItems = order.line_items.map(li => ({ id: li.id }));
+    // Check if there are unfulfilled line items
+    const unfulfilledLineItems = order.line_items.filter(li => 
+      (li.fulfillment_status === null || li.fulfillment_status === 'unfulfilled') && 
+      li.fulfillable_quantity > 0
+    );
+
+    if (unfulfilledLineItems.length === 0) {
+      return res.status(400).send("<h2>❌ אין פריטים זמינים למילוי</h2>");
+    }
+
+    console.log("Unfulfilled line items:", unfulfilledLineItems.map(li => ({
+      id: li.id,
+      quantity: li.quantity,
+      fulfillable_quantity: li.fulfillable_quantity,
+      fulfillment_status: li.fulfillment_status
+    })));
+
+    // Build line items with quantity
+    const lineItems = unfulfilledLineItems.map(li => ({ 
+      id: li.id,
+      quantity: li.fulfillable_quantity
+    }));
+
     let locationId = order.location_id;
 
     // Get location if not set
@@ -146,29 +175,36 @@ app.post("/pickup/confirm/execute", async (req, res) => {
         });
         if (locResp.data.locations?.length > 0) {
           locationId = locResp.data.locations[0].id;
+          console.log("Using location:", locationId);
+        } else {
+          console.log("No locations found");
         }
       } catch (locErr) {
         console.error("Location fetch error:", locErr.response?.data || locErr.message);
       }
     }
 
+    // Try different fulfillment data structures to avoid 406
     const fulfillmentData = {
       fulfillment: {
-        message: "Pickup confirmed by customer",
-        notify_customer: true,
         line_items: lineItems,
         location_id: locationId,
+        notify_customer: true,
+        tracking_company: null,
+        tracking_number: null,
+        message: "Pickup confirmed by customer"
       },
     };
 
     console.log("Creating fulfillment with data:", JSON.stringify(fulfillmentData, null, 2));
 
-    // Create fulfillment
+    // Create fulfillment with proper headers
     const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`;
     const fulfillmentResp = await axios.post(fulfillmentUrl, fulfillmentData, {
       headers: { 
         "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN, 
-        "Content-Type": "application/json" 
+        "Content-Type": "application/json",
+        "Accept": "application/json"
       },
     });
 
@@ -178,13 +214,28 @@ app.post("/pickup/confirm/execute", async (req, res) => {
   } catch (err) {
     console.error("Pickup execute error:", {
       status: err.response?.status,
+      statusText: err.response?.statusText,
       data: err.response?.data,
-      message: err.message
+      message: err.message,
+      headers: err.response?.headers
     });
     
     // Handle specific Shopify API errors
+    if (err.response?.status === 406) {
+      // Try alternative fulfillment approach for 406 errors
+      try {
+        console.log("Attempting alternative fulfillment method...");
+        await handleAlternativeFulfillment(order_id, res);
+        return;
+      } catch (altErr) {
+        console.error("Alternative fulfillment failed:", altErr);
+        return res.status(406).send("<h2>❌ שגיאה בממשק API של Shopify. צור קשר עם התמיכה.</h2>");
+      }
+    }
+    
     if (err.response?.status === 422) {
       const errors = err.response.data?.errors || {};
+      console.log("422 errors:", errors);
       if (errors.line_items) {
         return res.status(422).send("<h2>❌ שגיאה: פריטים לא זמינים למילוי</h2>");
       }
@@ -196,6 +247,73 @@ app.post("/pickup/confirm/execute", async (req, res) => {
     res.status(500).send("<h2>❌ שגיאה בביצוע האיסוף. נסה שוב מאוחר יותר.</h2>");
   }
 });
+
+// Alternative fulfillment method for 406 errors
+async function handleAlternativeFulfillment(order_id, res) {
+  try {
+    // First, try to get the order again to get fresh data
+    const order = await fetchOrder(order_id);
+    
+    // Get all unfulfilled line items
+    const unfulfilledItems = order.line_items.filter(item => 
+      item.fulfillment_status === null || item.fulfillment_status === 'unfulfilled'
+    );
+
+    if (unfulfilledItems.length === 0) {
+      return res.status(400).send("<h2>❌ כל הפריטים כבר מולאו</h2>");
+    }
+
+    // Try different approaches in order of preference
+    const approaches = [
+      // Approach 1: Minimal fulfillment without line_items (fulfill all unfulfilled)
+      {
+        fulfillment: {
+          notify_customer: true,
+          message: "Order ready for pickup"
+        }
+      },
+      // Approach 2: Just location and notification
+      {
+        fulfillment: {
+          location_id: 78097875044, // חנות location from your setup
+          notify_customer: false
+        }
+      },
+      // Approach 3: Absolutely minimal
+      {
+        fulfillment: {
+          notify_customer: false
+        }
+      }
+    ];
+
+    for (let i = 0; i < approaches.length; i++) {
+      try {
+        console.log(`Trying approach ${i + 1}:`, JSON.stringify(approaches[i], null, 2));
+        
+        const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`;
+        const response = await axios.post(fulfillmentUrl, approaches[i], {
+          headers: { 
+            "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN, 
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+          },
+        });
+
+        console.log(`Approach ${i + 1} succeeded:`, response.data);
+        return res.status(200).send("<h2>✅ האיסוף אושר בהצלחה!</h2>");
+      } catch (err) {
+        console.log(`Approach ${i + 1} failed:`, err.response?.status, err.response?.data);
+        if (i === approaches.length - 1) {
+          throw err; // Re-throw if this was the last approach
+        }
+      }
+    }
+  } catch (finalErr) {
+    console.error("All alternative approaches failed:", finalErr.response?.data || finalErr.message);
+    throw finalErr;
+  }
+}
 
 // 🔹 Test env vars
 app.get("/test-env", (req, res) => {
@@ -267,6 +385,46 @@ app.get("/list-orders", async (req, res) => {
   } catch (err) {
     console.error("Shopify API error:", err.response?.data || err.message);
     res.status(err.response?.status || 500).json({ success: false, error: err.response?.data || err.message });
+  }
+});
+
+// 🔹 Debug specific order fulfillment status
+app.get("/debug-order/:orderId", async (req, res) => {
+  try {
+    const orderId = req.params.orderId;
+    const order = await fetchOrder(orderId);
+    
+    const debugInfo = {
+      order_id: order.id,
+      order_number: order.name,
+      fulfillment_status: order.fulfillment_status,
+      financial_status: order.financial_status,
+      location_id: order.location_id,
+      fulfillment_service: order.fulfillment_service,
+      line_items: order.line_items.map(li => ({
+        id: li.id,
+        name: li.name,
+        quantity: li.quantity,
+        fulfillable_quantity: li.fulfillable_quantity,
+        fulfillment_status: li.fulfillment_status,
+        fulfillment_service: li.fulfillment_service,
+        product_exists: li.product_exists,
+        requires_shipping: li.requires_shipping
+      })),
+      existing_fulfillments: order.fulfillments || [],
+      shipping_lines: order.shipping_lines?.map(sl => ({
+        title: sl.title,
+        source: sl.source,
+        code: sl.code
+      })) || []
+    };
+    
+    res.json({ success: true, debug: debugInfo });
+  } catch (err) {
+    res.status(500).json({ 
+      success: false, 
+      error: err.response?.data || err.message 
+    });
   }
 });
 
