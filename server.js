@@ -73,12 +73,21 @@ app.get("/pickup/confirm", async (req, res) => {
             try {
               const res = await fetch("/pickup/confirm/execute", {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
+                headers: { 
+                  "Content-Type": "application/json",
+                  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                },
                 body: JSON.stringify({ order_id: "${order_id}", token: "${token}" })
               });
+              
+              if (!res.ok) {
+                throw new Error(\`HTTP \${res.status}: \${res.statusText}\`);
+              }
+              
               const text = await res.text();
               status.innerHTML = text;
             } catch (err) {
+              console.error("Error:", err);
               status.textContent = "❌ שגיאה בביצוע האיסוף. נסה שוב מאוחר יותר.";
               btn.disabled = false;
             }
@@ -88,38 +97,59 @@ app.get("/pickup/confirm", async (req, res) => {
       </html>
     `);
   } catch (err) {
-    console.error(err.response?.data || err.message || err);
+    console.error("Pickup confirm error:", err.response?.data || err.message || err);
     res.status(500).send("שגיאה בשרת. נסה שוב מאוחר יותר.");
   }
 });
 
-// 🔹 Execute pickup fulfillment
+// 🔹 Execute pickup fulfillment - SINGLE DEFINITION
 app.post("/pickup/confirm/execute", async (req, res) => {
   try {
+    console.log("Pickup execute request:", req.body);
+    
     const { order_id, token } = req.body;
+    if (!order_id || !token) {
+      return res.status(400).send("<h2>❌ בקשה לא חוקית: חסר order_id או token</h2>");
+    }
+
+    // Validate token
     const validToken = generateToken(order_id);
-    if (token !== validToken) return res.status(403).send("<h2>❌ הקישור אינו חוקי או פג תוקף</h2>");
+    if (token !== validToken) {
+      return res.status(403).send("<h2>❌ הקישור אינו חוקי או פג תוקף</h2>");
+    }
 
+    // Get order
     const order = await fetchOrder(order_id);
+    if (!order) {
+      return res.status(404).send("<h2>❌ ההזמנה לא נמצאה</h2>");
+    }
 
-    // Prevent multiple pickups
+    // Check if already fulfilled
     if (order.fulfillment_status === "fulfilled") {
-      return res.send("<h2>✅ ההזמנה כבר נאספה, הקישור אינו פעיל יותר</h2>");
+      return res.status(200).send("<h2>✅ ההזמנה כבר נאספה, הקישור אינו פעיל יותר</h2>");
     }
 
-    // Check payment
+    // Check payment status
     if (order.financial_status !== "paid") {
-      return res.send("<h2>❌ לא ניתן לאשר את האיסוף – התשלום לא בוצע</h2>");
+      return res.status(403).send("<h2>❌ לא ניתן לאשר את האיסוף – התשלום לא בוצע</h2>");
     }
 
+    // Build fulfillment payload
     const lineItems = order.line_items.map(li => ({ id: li.id }));
     let locationId = order.location_id;
 
+    // Get location if not set
     if (!locationId) {
-      const locResp = await axios.get(`https://${SHOP_NAME}/admin/api/${API_VERSION}/locations.json`, {
-        headers: { "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN }
-      });
-      locationId = locResp.data.locations[0].id;
+      try {
+        const locResp = await axios.get(`https://${SHOP_NAME}/admin/api/${API_VERSION}/locations.json`, {
+          headers: { "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN }
+        });
+        if (locResp.data.locations?.length > 0) {
+          locationId = locResp.data.locations[0].id;
+        }
+      } catch (locErr) {
+        console.error("Location fetch error:", locErr.response?.data || locErr.message);
+      }
     }
 
     const fulfillmentData = {
@@ -131,14 +161,38 @@ app.post("/pickup/confirm/execute", async (req, res) => {
       },
     };
 
+    console.log("Creating fulfillment with data:", JSON.stringify(fulfillmentData, null, 2));
+
+    // Create fulfillment
     const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`;
-    await axios.post(fulfillmentUrl, fulfillmentData, {
-      headers: { "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN, "Content-Type": "application/json" },
+    const fulfillmentResp = await axios.post(fulfillmentUrl, fulfillmentData, {
+      headers: { 
+        "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN, 
+        "Content-Type": "application/json" 
+      },
     });
 
-    res.send("<h2>✅ האיסוף אושר בהצלחה!</h2>");
+    console.log("Fulfillment created:", fulfillmentResp.data);
+    res.status(200).send("<h2>✅ האיסוף אושר בהצלחה!</h2>");
+
   } catch (err) {
-    console.error(err.response?.data || err.message || err);
+    console.error("Pickup execute error:", {
+      status: err.response?.status,
+      data: err.response?.data,
+      message: err.message
+    });
+    
+    // Handle specific Shopify API errors
+    if (err.response?.status === 422) {
+      const errors = err.response.data?.errors || {};
+      if (errors.line_items) {
+        return res.status(422).send("<h2>❌ שגיאה: פריטים לא זמינים למילוי</h2>");
+      }
+      if (errors.base) {
+        return res.status(422).send("<h2>❌ שגיאה בעיבוד ההזמנה</h2>");
+      }
+    }
+    
     res.status(500).send("<h2>❌ שגיאה בביצוע האיסוף. נסה שוב מאוחר יותר.</h2>");
   }
 });
@@ -160,14 +214,14 @@ app.get("/test-shopify", async (req, res) => {
       headers: { "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN },
     });
 
-    res.send({
+    res.json({
       success: true,
       shop: response.data.shop,
       apiVersion: API_VERSION,
     });
   } catch (err) {
     console.error(err.response?.data || err.message);
-    res.status(500).send({ success: false, error: err.response?.data || err.message });
+    res.status(500).json({ success: false, error: err.response?.data || err.message });
   }
 });
 
@@ -215,67 +269,6 @@ app.get("/list-orders", async (req, res) => {
     res.status(err.response?.status || 500).json({ success: false, error: err.response?.data || err.message });
   }
 });
-
-// 🔹 Confirm pickup (POST, AJAX-safe)
-app.post("/pickup/confirm/execute", async (req, res) => {
-  try {
-    const { order_id, token } = req.body;
-    if (!order_id || !token) return res.status(400).send(currentLang === "he" ? "בקשה לא חוקית" : "Invalid request");
-
-    // Validate token
-    const validToken = generateToken(order_id);
-    if (token !== validToken) return res.status(403).send(currentLang === "he" ? "קישור לא חוקי או פג תוקף" : "Invalid or expired link");
-
-    // Get order
-    const order = await fetchOrder(order_id);
-    if (!order) return res.status(404).send(currentLang === "he" ? "הזמנה לא נמצאה" : "Order not found");
-
-    // Check payment status
-    if (order.financial_status !== "paid") {
-      return res.status(403).send(currentLang === "he" ? "לא ניתן לאשר איסוף - התשלום לא בוצע" : "Cannot confirm pickup - payment not completed");
-    }
-
-    // Check if already fulfilled
-    if (order.fulfillment_status === "fulfilled") {
-      return res.status(403).send(currentLang === "he" ? "ההזמנה כבר נאספה" : "Order already picked up");
-    }
-
-    // Build fulfillment payload
-    const lineItems = order.line_items.map(li => ({ id: li.id }));
-    let locationId = order.location_id;
-
-    if (!locationId) {
-      const locResp = await axios.get(`https://${SHOP_NAME}/admin/api/${API_VERSION}/locations.json`, {
-        headers: { "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN }
-      });
-      if (locResp.data.locations?.length > 0) locationId = locResp.data.locations[0].id;
-    }
-
-    // Fulfill order
-    const fulfillmentResp = await axios.post(
-      `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`,
-      {
-        fulfillment: {
-          message: "Pickup confirmed by customer",
-          notify_customer: true,
-          line_items: lineItems,
-          location_id: locationId,
-        }
-      },
-      {
-        headers: { "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN, "Content-Type": "application/json" }
-      }
-    );
-
-    if (!fulfillmentResp.data.fulfillment) throw new Error("Could not fulfill order");
-
-    res.send(currentLang === "he" ? "✅ האיסוף אושר בהצלחה!" : "✅ Pickup confirmed successfully!");
-  } catch (err) {
-    console.error("Pickup execute error:", err.response?.data || err.message || err);
-    res.status(500).send(currentLang === "he" ? "❌ שגיאה בביצוע האיסוף. נסה שוב מאוחר יותר" : "❌ Pickup failed. Please try again.");
-  }
-});
-
 
 // ✅ Start server
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
