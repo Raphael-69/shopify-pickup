@@ -80,8 +80,7 @@ app.get("/pickup/confirm", async (req, res) => {
               const res = await fetch("/pickup/confirm/execute", {
                 method: "POST",
                 headers: { 
-                  "Content-Type": "application/json",
-                  "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                  "Content-Type": "application/json"
                 },
                 body: JSON.stringify({ order_id: "${order_id}", token: "${token}" })
               });
@@ -104,15 +103,17 @@ app.get("/pickup/confirm", async (req, res) => {
   }
 });
 
-// 🔹 Execute pickup fulfillment
+// 🔹 Execute pickup fulfillment (updated)
 app.post("/pickup/confirm/execute", async (req, res) => {
   try {
     const { order_id, token } = req.body;
-    if (!order_id || !token) return res.status(400).send("<h2>❌ בקשה לא חוקית: חסר order_id או token</h2>");
+    if (!order_id || !token)
+      return res.status(400).send("<h2>❌ בקשה לא חוקית: חסר order_id או token</h2>");
 
     // Validate token
     const validToken = generateToken(order_id);
-    if (token !== validToken) return res.status(403).send("<h2>❌ הקישור אינו חוקי או פג תוקף</h2>");
+    if (token !== validToken)
+      return res.status(403).send("<h2>❌ הקישור אינו חוקי או פג תוקף</h2>");
 
     // Get order
     const order = await fetchOrder(order_id);
@@ -120,29 +121,35 @@ app.post("/pickup/confirm/execute", async (req, res) => {
 
     // Already fulfilled
     if (order.fulfillment_status === "fulfilled") {
-      return res.status(200).send("<h2>✅ ההזמנה כבר נאספה, הקישור אינו פעיל יותר</h2>");
+      return res.status(200).send(
+        "<h2>✅ ההזמנה כבר נאספה, הקישור אינו פעיל יותר</h2>"
+      );
     }
 
     // Not paid
     if (order.financial_status !== "paid") {
-      return res.status(403).send("<h2>❌ לא ניתן לאשר את האיסוף – התשלום לא בוצע</h2>");
+      return res
+        .status(403)
+        .send("<h2>❌ לא ניתן לאשר את האיסוף – התשלום לא בוצע</h2>");
     }
 
     // Find unfulfilled items
-    const unfulfilledLineItems = order.line_items.filter(li => 
-      (!li.fulfillment_status || li.fulfillment_status === 'unfulfilled') && li.fulfillable_quantity > 0
+    const unfulfilledLineItems = order.line_items.filter(
+      (li) => (!li.fulfillment_status || li.fulfillment_status === "unfulfilled") && li.fulfillable_quantity > 0
     );
     if (unfulfilledLineItems.length === 0) {
       return res.status(400).send("<h2>❌ אין פריטים זמינים למילוי</h2>");
     }
 
-    // ✅ Include quantity
-    const lineItems = unfulfilledLineItems.map(li => ({
-      id: li.id,
-      quantity: li.fulfillable_quantity
-    }));
+    // ✅ Handle manual vs shopify fulfillment
+    const shopifyItems = unfulfilledLineItems.filter(
+      (li) => li.fulfillment_service !== "manual"
+    );
+    const manualItems = unfulfilledLineItems.filter(
+      (li) => li.fulfillment_service === "manual"
+    );
 
-    // Pick correct location
+    // Determine location
     let locationId = LOCATIONS.STORE; // default
     if (order.shipping_lines && order.shipping_lines.length > 0) {
       const shippingLine = order.shipping_lines[0];
@@ -153,30 +160,45 @@ app.post("/pickup/confirm/execute", async (req, res) => {
       }
     }
 
-    // Build fulfillment request
-    const fulfillmentData = {
-      fulfillment: {
-        location_id: locationId,
-        line_items: lineItems,
-        notify_customer: true,
-        message: "Pickup confirmed by customer"
-      },
-    };
+    // Fulfill Shopify items via API
+    if (shopifyItems.length > 0) {
+      const lineItems = shopifyItems.map((li) => ({
+        id: li.id,
+        quantity: li.fulfillable_quantity,
+      }));
 
-    // Create fulfillment
-    const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`;
-    await axios.post(fulfillmentUrl, fulfillmentData, {
-      headers: { 
-        "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN, 
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-      },
-    });
+      const fulfillmentData = {
+        fulfillment: {
+          location_id: locationId,
+          line_items: lineItems,
+          notify_customer: true,
+          message: "Pickup confirmed by customer",
+        },
+      };
+
+      const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`;
+      await axios.post(fulfillmentUrl, fulfillmentData, {
+        headers: {
+          "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+      });
+    }
+
+    // For manual items, just log internally (or update your DB if needed)
+    if (manualItems.length > 0) {
+      console.log(
+        `Manual items picked up for order ${order_id}:`,
+        manualItems.map((i) => i.title)
+      );
+      // Optionally, mark these as "picked up" in your database
+    }
 
     return res.status(200).send("<h2>✅ האיסוף אושר בהצלחה!</h2>");
   } catch (err) {
-    console.error("Pickup execute error:", err.response?.data || err.message);
-    res.status(500).send("<h2>❌ שגיאה בביצוע האיסוף. נסה שוב מאוחר יותר.</h2>");
+  console.error("Pickup execute error full:", err.response?.data || err.message);
+  res.status(500).send(`<h2>❌ Error: ${err.response?.data?.errors || err.message}</h2>`);
   }
 });
 
