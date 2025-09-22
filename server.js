@@ -136,6 +136,12 @@ app.post("/pickup/confirm/execute", async (req, res) => {
       return res.status(400).send("<h2>❌ אין פריטים זמינים למילוי</h2>");
     }
 
+    // ✅ Include quantity
+    const lineItems = unfulfilledLineItems.map(li => ({
+      id: li.id,
+      quantity: li.fulfillable_quantity
+    }));
+
     // Pick correct location
     let locationId = LOCATIONS.STORE; // default
     if (order.shipping_lines && order.shipping_lines.length > 0) {
@@ -148,11 +154,10 @@ app.post("/pickup/confirm/execute", async (req, res) => {
     }
 
     // Build fulfillment request
-    const lineItems = unfulfilledLineItems.map(li => ({ id: li.id }));
     const fulfillmentData = {
       fulfillment: {
-        line_items: lineItems,
         location_id: locationId,
+        line_items: lineItems,
         notify_customer: true,
         message: "Pickup confirmed by customer"
       },
