@@ -129,7 +129,8 @@ app.post("/pickup/confirm/execute", async (req, res) => {
       fulfillment_status: order.fulfillment_status,
       financial_status: order.financial_status,
       line_items_count: order.line_items?.length,
-      location_id: order.location_id
+      location_id: order.location_id,
+      shipping_lines: order.shipping_lines
     });
 
     // Check if already fulfilled
@@ -159,79 +160,99 @@ app.post("/pickup/confirm/execute", async (req, res) => {
       fulfillment_status: li.fulfillment_status
     })));
 
-    // Build line items with quantity
-    const lineItems = unfulfilledLineItems.map(li => ({ 
-      id: li.id,
-      quantity: li.fulfillable_quantity
-    }));
+    // Determine the correct location based on shipping selection
+    let locationId = null;
+    
+    // Check if shipping line indicates warehouse (מחסן)
+    if (order.shipping_lines && order.shipping_lines.length > 0) {
+      const shippingLine = order.shipping_lines[0];
+      if (shippingLine.title === "מחסן" || shippingLine.code === "מחסן") {
+        // Use warehouse location ID (from your setup)
+        locationId = 78097875044; // This should be your מחסן location ID
+      }
+    }
 
-    let locationId = order.location_id;
-
-    // Get location if not set
+    // If still no location, get the first available location
     if (!locationId) {
       try {
         const locResp = await axios.get(`https://${SHOP_NAME}/admin/api/${API_VERSION}/locations.json`, {
           headers: { "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN }
         });
         if (locResp.data.locations?.length > 0) {
-          locationId = locResp.data.locations[0].id;
-          console.log("Using location:", locationId);
+          // Find the warehouse location or use the first one
+          const warehouseLocation = locResp.data.locations.find(loc => 
+            loc.name === "מחסן" || loc.address1?.includes("המלאכה")
+          );
+          locationId = warehouseLocation ? warehouseLocation.id : locResp.data.locations[0].id;
+          console.log("Using location:", locationId, warehouseLocation?.name || locResp.data.locations[0].name);
         } else {
           console.log("No locations found");
+          return res.status(500).send("<h2>❌ לא נמצא מיקום למילוי ההזמנה</h2>");
         }
       } catch (locErr) {
         console.error("Location fetch error:", locErr.response?.data || locErr.message);
+        return res.status(500).send("<h2>❌ שגיאה בקבלת פרטי מיקום</h2>");
       }
     }
 
-    // Try different fulfillment data structures to avoid 406
+    // Build line items - try without quantity first (some Shopify versions don't like it)
+    const lineItems = unfulfilledLineItems.map(li => ({ id: li.id }));
+
+    // Try the main fulfillment approach
     const fulfillmentData = {
       fulfillment: {
         line_items: lineItems,
         location_id: locationId,
         notify_customer: true,
-        tracking_company: null,
-        tracking_number: null,
         message: "Pickup confirmed by customer"
       },
     };
 
     console.log("Creating fulfillment with data:", JSON.stringify(fulfillmentData, null, 2));
 
-    // Create fulfillment with proper headers
-    const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`;
-    const fulfillmentResp = await axios.post(fulfillmentUrl, fulfillmentData, {
-      headers: { 
-        "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN, 
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-      },
-    });
+    try {
+      // Create fulfillment with proper headers
+      const fulfillmentUrl = `https://${SHOP_NAME}/admin/api/${API_VERSION}/orders/${order_id}/fulfillments.json`;
+      const fulfillmentResp = await axios.post(fulfillmentUrl, fulfillmentData, {
+        headers: { 
+          "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN, 
+          "Content-Type": "application/json",
+          "Accept": "application/json"
+        },
+      });
 
-    console.log("Fulfillment created:", fulfillmentResp.data);
-    res.status(200).send("<h2>✅ האיסוף אושר בהצלחה!</h2>");
+      console.log("Fulfillment created:", fulfillmentResp.data);
+      res.status(200).send("<h2>✅ האיסוף אושר בהצלחה!</h2>");
+      return;
+
+    } catch (err) {
+      console.error("Main fulfillment failed:", {
+        status: err.response?.status,
+        data: err.response?.data
+      });
+
+      // If main approach fails with 406, try alternative
+      if (err.response?.status === 406) {
+        console.log("Trying alternative fulfillment approaches...");
+        try {
+          await handleAlternativeFulfillment(order_id, locationId, res);
+          return;
+        } catch (altErr) {
+          console.error("Alternative fulfillment failed:", altErr);
+          return res.status(406).send("<h2>❌ שגיאה בממשק API של Shopify. צור קשר עם התמיכה.</h2>");
+        }
+      }
+      
+      throw err; // Re-throw for other error types
+    }
 
   } catch (err) {
     console.error("Pickup execute error:", {
       status: err.response?.status,
       statusText: err.response?.statusText,
       data: err.response?.data,
-      message: err.message,
-      headers: err.response?.headers
+      message: err.message
     });
-    
-    // Handle specific Shopify API errors
-    if (err.response?.status === 406) {
-      // Try alternative fulfillment approach for 406 errors
-      try {
-        console.log("Attempting alternative fulfillment method...");
-        await handleAlternativeFulfillment(order_id, res);
-        return;
-      } catch (altErr) {
-        console.error("Alternative fulfillment failed:", altErr);
-        return res.status(406).send("<h2>❌ שגיאה בממשק API של Shopify. צור קשר עם התמיכה.</h2>");
-      }
-    }
     
     if (err.response?.status === 422) {
       const errors = err.response.data?.errors || {};
@@ -249,7 +270,7 @@ app.post("/pickup/confirm/execute", async (req, res) => {
 });
 
 // Alternative fulfillment method for 406 errors
-async function handleAlternativeFulfillment(order_id, res) {
+async function handleAlternativeFulfillment(order_id, locationId, res) {
   try {
     // First, try to get the order again to get fresh data
     const order = await fetchOrder(order_id);
@@ -265,18 +286,19 @@ async function handleAlternativeFulfillment(order_id, res) {
 
     // Try different approaches in order of preference
     const approaches = [
-      // Approach 1: Minimal fulfillment without line_items (fulfill all unfulfilled)
+      // Approach 1: Without line_items, just location and notification
       {
         fulfillment: {
+          location_id: locationId,
           notify_customer: true,
           message: "Order ready for pickup"
         }
       },
-      // Approach 2: Just location and notification
+      // Approach 2: Minimal fulfillment without location
       {
         fulfillment: {
-          location_id: 78097875044, // חנות location from your setup
-          notify_customer: false
+          notify_customer: true,
+          message: "Pickup confirmed by customer"
         }
       },
       // Approach 3: Absolutely minimal
@@ -385,6 +407,30 @@ app.get("/list-orders", async (req, res) => {
   } catch (err) {
     console.error("Shopify API error:", err.response?.data || err.message);
     res.status(err.response?.status || 500).json({ success: false, error: err.response?.data || err.message });
+  }
+});
+
+// 🔹 Test locations
+app.get("/test-locations", async (req, res) => {
+  try {
+    const url = `https://${SHOP_NAME}/admin/api/${API_VERSION}/locations.json`;
+    const response = await axios.get(url, {
+      headers: { "X-Shopify-Access-Token": SHOPIFY_ADMIN_TOKEN },
+    });
+
+    res.json({
+      success: true,
+      locations: response.data.locations.map(loc => ({
+        id: loc.id,
+        name: loc.name,
+        address1: loc.address1,
+        city: loc.city,
+        active: loc.active
+      }))
+    });
+  } catch (err) {
+    console.error("Locations error:", err.response?.data || err.message);
+    res.status(500).json({ success: false, error: err.response?.data || err.message });
   }
 });
 
